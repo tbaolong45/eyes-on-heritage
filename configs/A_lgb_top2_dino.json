@@ -1,0 +1,20 @@
+{
+ "name": "A_lgb_top2_dino",
+ "kind": "A",
+ "cfg": {
+  "algo": "lgb",
+  "agg": "top2",
+  "k": 2,
+  "reverse": false,
+  "ambiguous": "exclude",
+  "label_w": true,
+  "balance": true,
+  "variant": "tiles",
+  "dino": "dinov2-l_B1",
+  "threads": 4
+ },
+ "budget": {
+  "lgb": 63
+ },
+ "cv_hash": "4070691d"
+}

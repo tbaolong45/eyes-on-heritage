@@ -1,0 +1,27 @@
+{
+ "name": "Apt_opt",
+ "kind": "Apt",
+ "cfg": {
+  "algo": "lgb",
+  "agg": "top2",
+  "k": 2,
+  "reverse": false,
+  "ambiguous": "exclude",
+  "label_w": true,
+  "balance": true,
+  "variant": "tiles",
+  "dino": "dinov2-l_B1",
+  "threads": 4,
+  "point": true,
+  "lr": 0.0414605918232234,
+  "leaves": 21,
+  "min_leaf": 78,
+  "ff": 0.7634362510345057,
+  "l2": 6.9216962296422375,
+  "l1": 0.09339014290782491,
+  "depth": 5,
+  "notes": "optuna best (30 trials, seed 0)"
+ },
+ "budget": 93,
+ "cv_hash": "7d930c6c"
+}
