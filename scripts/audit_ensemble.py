@@ -35,7 +35,8 @@ out = dict(members=members)
 
 # ================= 1. leak assertions (splits are deterministic functions of (fold, seed)) =================
 print("== 1. leak assertions", flush=True)
-src_runs = {"C_l_B2_lora3": ["C_l_B2_lora", "C_l_B2_lora_s12"]}
+src_runs = {"C_l_B2_lora3": ["C_l_B2_lora", "C_l_B2_lora_s12"], "C_v2lab3": ["C_v2lab_s0", "C_v2lab_s12"],
+            "C_v3lab_dinov3_3": ["C_v3lab_dinov3_s0", "C_v3lab_dinov3_s12"]}
 leak_rows = []
 for m in members:
     for rn in src_runs.get(m, [m]):
@@ -107,15 +108,25 @@ def nested_eval(weights=None, name=""):
     return pred_in, pred_out, fitted
 
 
+HAS_ORIG = "y_orig" in pts.columns
+ORG = (pts.source == "organizers").to_numpy() if HAS_ORIG else None
+Y0 = pts.y_orig.to_numpy() if HAS_ORIG else None
+
+
 def summarise(name, pred_in, pred_out, how, fitted=None):
     Mi, Mo = fast_f1(y, pred_in), fast_f1(y, pred_out)
+    org = {}
+    if HAS_ORIG:   # comparable with v1: organizer points only, scored against the original organizer labels
+        mi0, mo0 = fast_f1(Y0[ORG], pred_in[ORG]), fast_f1(Y0[ORG], pred_out[ORG])
+        org = dict(M_in_org=mi0, M_out_org=mo0, S_org=hm(mi0, mo0),
+                   aleppo_org=float(fast_f1(Y0[ORG & (site == "aleppo")], pred_out[ORG & (site == "aleppo")])))
     uc = np.unique(cells); ix = {c: np.where(cells == c)[0] for c in uc}; rng = np.random.RandomState(0); B = []
     for _ in range(1000):
         sel = np.concatenate([ix[c] for c in rng.choice(uc, len(uc))])
         B.append(hm(fast_f1(y[sel], pred_in[sel]), fast_f1(y[sel], pred_out[sel])))
     return dict(name=name, how=how, M_in=Mi, M_out=Mo, S=hm(Mi, Mo), S_ci=np.percentile(B, [2.5, 97.5]).round(4).tolist(),
                 perclass_in=fast_f1(y, pred_in, True).round(3).tolist(), perclass_out=fast_f1(y, pred_out, True).round(3).tolist(),
-                per_site_out={s: float(fast_f1(y[site == s], pred_out[site == s])) for s in SITES}, fitted=fitted)
+                per_site_out={s: float(fast_f1(y[site == s], pred_out[site == s])) for s in SITES}, fitted=fitted, **org)
 
 
 print("== 2. ensembles", flush=True)
@@ -147,10 +158,11 @@ out["ensembles"] = ens_rows
 json.dump(out, open(REPORTS / f"audit_{tag}.json", "w"), indent=1, default=float)
 
 # ---- markdown ----
-L = ["| variant | M_in | M_out | S | S 95% CI (cell bootstrap) | F1 constr/destr/soil/no_ch (LOSO) | Aleppo |", "|---|---|---|---|---|---|---|"]
+L = ["| variant | M_in | M_out | S | S 95% CI (cell bootstrap) | F1 constr/destr/soil/no_ch (LOSO) | Aleppo | S organizer pts, original labels |",
+     "|---|---|---|---|---|---|---|---|"]
 for r in ens_rows:
     L.append(f"| {r['name']} | {r['M_in']:.4f} | {r['M_out']:.4f} | **{r['S']:.4f}** | {r['S_ci'][0]:.3f}–{r['S_ci'][1]:.3f} | "
-             f"{r['perclass_out']} | {r['per_site_out']['aleppo']:.3f} |")
+             f"{r['perclass_out']} | {r['per_site_out']['aleppo']:.3f} | {r.get('S_org', float('nan')):.4f} |")
 M = ["| member | seeds | S per-seed mean (recomputed) | S in results.md | S seed-averaged probs (what the ensemble reads) |", "|---|---|---|---|---|"]
 for r in mem_rows:
     M.append(f"| {r['member']} | {r['n_seeds']} | {r['S_per_seed_mean']:.4f} | {r['S_logged_results_md']:.4f} | {r['S_seedavg_probs']:.4f} |")

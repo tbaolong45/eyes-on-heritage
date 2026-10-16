@@ -139,7 +139,7 @@ class ModelB:
         for k in idx:
             r = self.pts.iloc[k]; years, bad, q = self.meta[r.point_id]
             vi, _ = valid_dates(bad, q)
-            lp = label_pairs(r.y, r.year, years, list(vi), ambiguous=cfg.get("ambiguous", "exclude"),
+            lp = label_pairs(r.y, r.year, years, list(vi), year_before=r.get("year_before"), ambiguous=cfg.get("ambiguous", "exclude"),
                              reverse=cfg.get("reverse", True))
             if cfg.get("pairs") == "core":
                 if r.y == NC:
@@ -158,7 +158,7 @@ class ModelB:
         torch.manual_seed(seed); np.random.seed(seed)
         G = self.S.G
         net = Head(self.S.D2, G, d=cfg.get("d", 256), layers=cfg.get("layers", 2),
-                   sigma_tokens=16.0 / (128.0 / G if self.S.meta["config"] == "B1" else 64.0 / G),
+                   sigma_tokens=16.0 / (128.0 / G if self.S.meta["config"].startswith("B1") else 64.0 / G),
                    drop=cfg.get("drop", 0.1), use_mid=cfg.get("use_mid", True)).to(self.dev)
         # per-point sampling: every epoch sees each training point once (pair drawn by weight)
         by_pt = {}

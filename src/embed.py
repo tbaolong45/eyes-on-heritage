@@ -16,12 +16,37 @@ BACKBONES = {
                       mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
     "dinov3s-7b": dict(timm="hf-hub:timm/vit_7b_patch16_dinov3.sat493m", patch=16,
                        mean=(0.430, 0.411, 0.296), std=(0.213, 0.156, 0.143)),
+    # RemoteCLIP (remote-sensing CLIP, ViT-L/14 at a fixed 224 px input) via open_clip
+    "remoteclip-l": dict(openclip=("ViT-L-14", "chendelong/RemoteCLIP", "RemoteCLIP-ViT-L-14.pt"), patch=14,
+                         mean=(0.481, 0.458, 0.408), std=(0.269, 0.261, 0.276)),
 }
 # input configs: crop side (px of 0.5 m) -> model grid tokens; output stored at GRID x GRID
-CONFIGS = {"B1": dict(crop=256, grid_in=32, grid_out=16), "B2": dict(crop=128, grid_in=16, grid_out=16)}
+CONFIGS = {"B1": dict(crop=256, grid_in=32, grid_out=16), "B2": dict(crop=128, grid_in=16, grid_out=16),
+           "B1c": dict(crop=256, grid_in=16, grid_out=16)}     # 128 m at a fixed 224 px input (CLIP-style ViTs)
+
+
+class OpenClipVisual(torch.nn.Module):
+    """Wraps an open_clip ViT so that encode() can treat it like the timm path."""
+    def __init__(self, visual):
+        super().__init__(); self.visual = visual
+        self.blocks = visual.transformer.resblocks; self.embed_dim = visual.transformer.width
+
+    def forward_intermediates(self, x, indices, **kw):
+        out = self.visual.forward_intermediates(x, indices=indices, output_fmt="NCHW", intermediates_only=True,
+                                                output_extra_tokens=True)
+        sp, ex = out["image_intermediates"], out.get("image_intermediates_prefix")
+        return [(sp[k], ex[k] if ex is not None else sp[k].flatten(2).mean(-1)[:, None]) for k in range(len(sp))]
 
 
 def load_backbone(name, device="cuda"):
+    if "openclip" in BACKBONES[name]:
+        import open_clip
+        from huggingface_hub import hf_hub_download
+        arch, repo, fn = BACKBONES[name]["openclip"]
+        m = open_clip.create_model(arch, pretrained=None)
+        sd = torch.load(hf_hub_download(repo, fn), map_location="cpu")
+        m.load_state_dict(sd.get("state_dict", sd) if isinstance(sd, dict) else sd)
+        return OpenClipVisual(m.visual).to(device).half().eval()
     if "timm" in BACKBONES[name]:
         import timm
         m = timm.create_model(BACKBONES[name]["timm"], pretrained=True, num_classes=0)
@@ -83,6 +108,7 @@ def encode(model, x, patch, grid_in, grid_out, mid_layer):
         outs = model.forward_intermediates(x, indices=[mid_layer - 1, L - 1], norm=True, output_fmt="NCHW",
                                            intermediates_only=True, return_prefix_tokens=True)
         (g_mid, _), (g_last, pre) = outs
+        pre = pre if pre.dim() == 3 else pre[:, None]
         def pool(t):
             return F.adaptive_avg_pool2d(t.float(), grid_out).to(t.dtype) if grid_out != grid_in else t
         return torch.cat([pool(g_last), pool(g_mid)], 1), pre[:, 0]
@@ -147,7 +173,7 @@ def extract_to_dir(index, out, bb, cfgn, variant="tiles", model=None, log=print)
     tok.flush(); cls.flush()
     np.save(out / "valid.npy", val)
     index.reset_index(drop=True).to_parquet(out / "index.parquet")
-    json.dump(dict(backbone=bb, hf=B.get("hf", B.get("timm")), config=cfgn, mid_layer=mid, layers=L, D=D, grid=G, side=side,
+    json.dump(dict(backbone=bb, hf=B.get("hf", B.get("timm", str(B.get("openclip")))), config=cfgn, mid_layer=mid, layers=L, D=D, grid=G, side=side,
                    variant=variant), open(out / "meta.json", "w"))
     (out / "done").touch()
     return model
@@ -160,7 +186,7 @@ def center_pool(d):
     d = Path(d)
     meta = json.load(open(d / "meta.json")); G = meta["grid"]
     tok = np.load(d / "tokens.npy", mmap_mode="r"); val = np.load(d / "valid.npy").astype(np.float32)
-    tok_m = 128 / G if meta["config"] == "B1" else 64 / G
+    tok_m = 128 / G if meta["config"].startswith("B1") else 64 / G
     r = max(1, int(round(16 / tok_m)))
     yy, xx = np.meshgrid(np.arange(G), np.arange(G), indexing="ij"); c = (G - 1) / 2
     cm = ((np.abs(yy - c) <= r) & (np.abs(xx - c) <= r)).flatten()

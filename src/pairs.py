@@ -40,8 +40,10 @@ def infer_pairs(pid, vi, years):
     return all_pairs(vi)
 
 
-def label_pairs(cls, year, years, idx, ambiguous="exclude", reverse=False):
-    """Return list of (i, j, label, weight, is_core) training pairs for one point."""
+def label_pairs(cls, year, years, idx, ambiguous="exclude", reverse=False, year_before=None):
+    """Return list of (i, j, label, weight, is_core) training pairs for one point.
+    v1 labels: `year` = first year in which the change is visible (before: < year, after: >= year).
+    v3 labels: `year_before` / `year` (= year_after) bracket the change (before: <= year_before, after: >= year_after)."""
     out = []
     pairs = all_pairs(idx)
     if cls == NC:
@@ -51,10 +53,11 @@ def label_pairs(cls, year, years, idx, ambiguous="exclude", reverse=False):
                 out.append((j, i, NC, 1.0, False))
         return out
     Y = int(year)
-    before = [i for i in idx if years[i] < Y]; after = [i for i in idx if years[i] >= Y]
+    YB = int(year_before) if (year_before is not None and np.isfinite(year_before)) else Y - 1
+    before = [i for i in idx if years[i] <= YB]; after = [i for i in idx if years[i] >= Y]
     core = (before[-1], after[0]) if before and after else None
     for i, j in pairs:
-        span = years[i] <= Y - 1 and years[j] >= Y
+        span = years[i] <= YB and years[j] >= Y
         if span:
             out.append((i, j, cls, 1.0, (i, j) == core))
             if reverse and cls in (CON, DES):
@@ -69,7 +72,9 @@ def label_pairs(cls, year, years, idx, ambiguous="exclude", reverse=False):
 
 def point_weights(pts, use_label_w=True, balance=True):
     w = np.ones(len(pts))
-    if use_label_w:
+    if use_label_w and "train_weight" in pts:      # v3 labels: reviewer-assigned reliability weights
+        w *= pts.train_weight.fillna(1.0).to_numpy(float)
+    elif use_label_w:
         ba = pts.best_accuracy.fillna(70).to_numpy(float)
         w *= np.clip((ba - 40) / 55, 0.3, 1)
         w *= np.where(pts.verified_ok.fillna(0).to_numpy() > 0, 1.3, 1.0)
