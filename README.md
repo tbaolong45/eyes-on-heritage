@@ -78,7 +78,7 @@ Backbones are downloaded from the Hugging Face Hub on first use: `facebook/dinov
 ## Data
 ```
 $DATA_DIR/train_annotations.geojson
-$DATA_DIR/training_points_reviewed.geojson
+$DATA_DIR/train_points_organized.geojson      # reviewed points: use_for_training, weight, review_status, year_before / year_after
 $DATA_DIR/train_imagery/train_imagery_<site>-<country>.zip     # one GeoTIFF per date: YYYY_YYYYMMDD.tif
 ```
 `DATA_DIR` defaults to `~/data/train_dataset`. `HERITAGE_ROOT` is where `cache/`, `reports/`, `logs/` and `models/`

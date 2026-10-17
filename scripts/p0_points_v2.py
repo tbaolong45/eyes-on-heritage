@@ -1,4 +1,4 @@
-"""v3 labels: build cache/points.parquet from training_points_reviewed.geojson (run with HERITAGE_ROOT=<v2 root>).
+"""v3 labels: build cache/points.parquet from train_points_organized.geojson (run with HERITAGE_ROOT=<v2 root>).
 Organizer points keep their v1 point_id (tiles are reused); extra points get '<site>_x<id>'. Writes y (reviewed class),
 y_orig (organizer class, -1 for extra points), year_before / year_after, train_weight, cells and 200 m blocks."""
 import sys, json
@@ -9,14 +9,14 @@ import numpy as np, pandas as pd
 from pyproj import Transformer
 
 V1 = Path.home() / "heritage" / "cache" / "points.parquet"
-gj = json.load(open(DATA_DIR / "training_points_reviewed.geojson"))
+gj = json.load(open(DATA_DIR / "train_points_organized.geojson"))
 old = pd.read_parquet(V1)
 okey = {(round(a, 7), round(b, 7)): r for a, b, r in zip(old.lon, old.lat, old.itertuples())}
 meta = json.load(open(CACHE / "site_meta.json"))
 rows = []
 for f in gj["features"]:
     p = dict(f["properties"]); lon, lat = f["geometry"]["coordinates"][:2]
-    if not p.get("used_for_training", True):
+    if not p.get("use_for_training", True):
         continue
     site = p["site"].split("-")[0]; assert site in SITES, site
     o = okey.get((round(lon, 7), round(lat, 7)))
@@ -30,14 +30,14 @@ for f in gj["features"]:
     cr = int(np.floor((row - m["lat_off_row"]) / CELL_PX)); cc = int(np.floor((col - m["lat_off_col"]) / CELL_PX))
     rows.append(dict(point_id=pid, site=site, lon=lon, lat=lat, col=col, row=row, utm_x=x, utm_y=y_,
                      cell_id=f"{site}_{cr}_{cc}", cell_r=cr, cell_c=cc, block_id=f"{site}_{cr // 2}_{cc // 2}",
-                     source=p["source"], review=p["review"], **{"class": p["class"]}, y=C2I[p["class"]],
+                     source=p["source"], review=p["review_status"], **{"class": p["class"]}, y=C2I[p["class"]],
                      y_orig=(o.y if o is not None else -1), class_original=p.get("class_original"),
                      year_before=p["year_before"], year_after=p["year_after"],
                      year=(float(p["year_after"]) if p["class"] != "no_change" and p["year_after"] is not None else np.nan),
-                     train_weight=float(p["train_weight"]), src_index=int(p["point_id"])))
+                     train_weight=float(p["weight"]), src_index=int(p["point_id"])))
 df = pd.DataFrame(rows)
 assert df.point_id.is_unique
-print(len(df), "points |", (df.source == "extra").sum(), "extra |", df["class"].value_counts().to_dict())
+print(len(df), "points |", (df.source != "organizers").sum(), "team-added |", df["class"].value_counts().to_dict())
 print("changed vs v1 organizer labels:", int(((df.y_orig >= 0) & (df.y != df.y_orig)).sum()))
 print("year_after != v1 year (changed classes):", int(((df.source == "organizers") & df.year.notna() &
       (df.point_id.map(dict(zip(old.point_id, old.year))) != df.year)).sum()))
