@@ -1,4 +1,4 @@
-"""Final training on all 776 points and member-wise prediction for predict.py.
+"""Final training on all training points and member-wise prediction for predict.py.
 
 A member spec is a dict: {"name": ..., "kind": "A"|"Apt"|"B"|"D", "cfg": {...}, "budget": n_iter/epochs}.
 Each trained member is stored in models/final/<name>/ as cfg.json + model.pt (data references stripped)."""

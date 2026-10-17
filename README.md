@@ -1,147 +1,172 @@
 # Eyes on Heritage: multi-temporal change classification
 
-Point-level change detection on very-high-resolution (0.5 m) multi-temporal RGB satellite imagery. For every point the
-pipeline outputs `p_change` and one class from `construction`, `destruction`, `soil_sealing`, `no_change`.
+Point-level change classification on 0.5 m multi-date RGB satellite imagery. For every point the pipeline outputs `p_change` and one
+class from `construction`, `destruction`, `soil_sealing`, `no_change`. It is scored with the hackathon metric
+**S = HM(M_in, M_out)**: macro-F1 under spatial cross-validation (M_in) and leave-one-site-out (M_out).
 
-## Results (fully nested validation)
-S = harmonic mean of M_in (spatial 5-fold CV, 200 m blocks) and M_out (leave-one-site-out), macro-F1 over 4 classes.
+This version trains on the **organized dataset**: `train_points_organized.geojson` (1029 usable reviewed points) and
+`train_pairs.csv` (19 045 labelled year pairs). `eval_original_776.csv` adds a score on the organizers' original labels.
 
-| | v1 | **v3 (current)** |
+## 1. Inputs
+Put the data in one folder, `/workspace` by default:
+```
+/workspace/
+├── train_points_organized.geojson      # reviewed points: class, year_before/after, usable_years, weight, use_for_training
+├── train_pairs.csv                     # labelled year pairs per point (train_pairs.json with the same columns also works)
+├── eval_original_776.csv               # optional: organizers' original labels (scored in the audit)
+└── train_dataset/
+    ├── agadez-niger/        2018_20180825.tif  2019_20191208.tif  ...
+    ├── aleppo-syria/        ...
+    ├── derna-libya/         ...
+    ├── marrakesh-morocco/   ...
+    └── timbuktu-mali/       ...        # one 4-band uint8 GeoTIFF per date, YYYY_YYYYMMDD.tif, all dates on one grid
+```
+Site folders are matched by their name prefix (`agadez…`, `aleppo…`, `derna…`, `marrakesh…`, `timbuktu…`), at any depth below
+`train_dataset/`. Unzip the organizers' zips into it if needed: `unzip -q '*.zip' -d /workspace/train_dataset`.
+
+## 2. Configure
+All paths are set in one block at the top of `src/common.py`. You can edit that block or set environment variables:
+
+| variable | default | what |
 |---|---|---|
-| labels | `train_annotations.geojson`, 776 points | `training_points_reviewed.geojson`, 932 points |
-| members | A, A-pt, B, C (DINOv2-L) | A, B, C (DINOv2-L), **C (DINOv3-sat-L)** |
-| M_in | 0.720 | 0.692 |
-| M_out | 0.579 | **0.590** |
-| S | 0.642 (CI 0.599–0.680) | 0.637 (CI 0.598–0.671) |
-| Aleppo (closest proxy to an unseen dense city) | 0.652 | **0.684** |
+| `DATA_DIR` | `/workspace` | folder holding the inputs above |
+| `IMAGERY_DIR` | `$DATA_DIR/train_dataset` | site folders of GeoTIFFs |
+| `POINTS_FILE` | `$DATA_DIR/train_points_organized.geojson` | reviewed points |
+| `PAIRS_FILE` | `$DATA_DIR/train_pairs.csv`, else `.json` | labelled pairs |
+| `EVAL_FILE` | `$DATA_DIR/eval_original_776.csv` | organizer labels (optional) |
+| `HERITAGE_ROOT` | `$DATA_DIR/heritage_run` | everything the pipeline writes: `cache/`, `reports/`, `logs/`, `models/` |
 
-Comparison at the same number of CV seeds for Model C (one seed): v1 0.618 vs v3 **0.637**. The final models of both
-versions are trained with 5 seeds per member. The v3 score on the 776 organizer points with their original labels is 0.632.
+`HERITAGE_ROOT` needs about 100 GB free: the DINOv2 token cache alone is about 60 GB.
 
-Per-class F1 (v3, nested):
+## 3. Install
+Python 3.12 and a CUDA GPU (24 GB or more for Models C and C3).
+```bash
+git clone https://github.com/dangaura-tech/eyes-on-heritage.git /workspace/eyes-on-heritage
+cd /workspace/eyes-on-heritage
+bash scripts/setup_env.sh          # .venv with CUDA torch + requirements.txt
+```
+On a box that already has CUDA torch, you can skip the venv: `grep -v -E '^(torch|torchvision)==' requirements.txt | pip install -r /dev/stdin`.
+Backbones download from the Hugging Face Hub on the first run: `facebook/dinov2-large` and `timm/vit_large_patch16_dinov3.sat493m`.
+If a download is refused, accept the model's licence on its Hub page and run `huggingface-cli login`.
 
-| class | in-domain | leave-one-site-out |
-|---|---|---|
-| construction | 0.748 | 0.694 |
-| destruction | 0.577 | 0.440 |
-| soil_sealing | 0.595 | 0.458 |
-| no_change | 0.848 | 0.769 |
+## 4. Run
+```bash
+cd /workspace/eyes-on-heritage
+nohup bash scripts/run_all.sh > /workspace/run_all.out 2>&1 &
+tail -f /workspace/run_all.out
+```
+`run_all.sh` runs every step in order and skips a step whose output already exists, so you can re-run it after a crash or a disconnect.
+Each step logs to `$HERITAGE_ROOT/logs/<step>.log` and ends with `EXIT 0` on success. To run a single step:
+`bash scripts/run.sh <log name> scripts/<script>.py [args]`.
 
-## Method (v3)
+| step | script | output | notes |
+|---|---|---|---|
+| p0 | `p0_data.py` | `cache/points.parquet`, `cache/pair_labels.parquet`, `cache/site_meta.json`, `reports/data_audit.md` | links the site folders, audits the imagery, builds the tables |
+| p1 | `p1_tiles.py` | `cache/tiles/<site>/<point>.npz`, `cache/quality.parquet` | co-registered 192 m tiles; valid dates = `usable_years` |
+| holes | `check_holes_v2.py` | – | asserts no training point lies in a withheld (alpha = 0) cell |
+| featA | `p3_featA.py` | `cache/featA_tiles_*.parquet` | handcrafted pair features (CPU, all cores) |
+| emb | `p4_embed.py dinov2-l B1` | `cache/emb/dinov2-l_B1/`, `cache/dinopair_*.parquet` | frozen DINOv2-L tokens, 8 views (GPU) |
+| A | `exp_A.py` | `cache/oof/A_train_pairs_dinov2.npz` | LightGBM on pair features + DINOv2 distances |
+| B | `exp_B.py` | `cache/oof/B_train_pairs_dinov2.npz` | transformer head on frozen tokens (GPU) |
+| C | `exp_C.py` | `cache/oof/C_train_pairs_dinov2.npz` | siamese DINOv2-L + LoRA (GPU, hours per seed) |
+| C3 | `exp_C.py {"bb":"dinov3s-l"}` | `cache/oof/C_train_pairs_dinov3.npz` | siamese DINOv3-SAT-L + LoRA (GPU, hours per seed) |
+| ens | `ensemble.py --weights eq` | `reports/ens_<TAG>.json` | equal weights; threshold t and class biases b tuned on pooled leave-one-site-out OOF |
+| calib | `v2_ensemble.py` | `reports/v2ens_<TAG>.json` | monotone Platt calibration of `p_change` |
+| audit | `audit_ensemble.py` | `reports/audit_ens_<TAG>.md` | **the headline scores**: fully nested S with CI, per class, per site, and S on the organizers' original labels |
+| final | `train_final.py` | `models/final/<member>/`, `models/final/ensemble.json` | all training points, 5 seeds per member |
+
+Every experiment also appends a row to `reports/results.md`. Variables you can set before `run_all.sh`:
+`MEMBERS` (default `A_train_pairs_dinov2,B_train_pairs_dinov2,C_train_pairs_dinov2,C_train_pairs_dinov3`), `SEEDS_AB` (`0,1,2`), `SEEDS_C` (`0`),
+`FINAL_SEEDS` (`0,1,2,3,4`), `TAG` (defaults to `PAIRS_FROM`), `PAIRS_FROM` (`train_pairs`, see section 6). For a fast first pass, run only A and B:
+`MEMBERS=A_train_pairs_dinov2,B_train_pairs_dinov2 TAG=quick bash scripts/run_all.sh`. Use a different `TAG` (or delete the `ens/calib/audit` reports) when you change `MEMBERS`, because finished steps are skipped.
+Changing `PAIRS_FROM` needs nothing else: members and reports carry the label source in their names, and tiles, features and
+embeddings are reused. `models/final/` always holds the last finished `final` step.
+
+## 5. Predict
+```bash
+python predict.py --points test_points.geojson --imagery /path/to/site_folder_or_zip --out submission.csv
+# options: --site NAME  --id-col id  --use-year  --tta N (default 8; lower is faster)  --models DIR  --work DIR
+```
+Set the same `DATA_DIR` / `HERITAGE_ROOT` as for training: the models are read from `$HERITAGE_ROOT/models/final`. The points file is
+GeoJSON or CSV with lon/lat (CRS84) and an id column. The imagery is one site's folder or zip of `YYYY_YYYYMMDD.tif` files on one
+grid. Test points have no reviewed `usable_years`, so their dates are filtered by the automatic quality flags. For a training site,
+`predict.py` also drops the scenes the review rejected for the whole site (`unusable_scenes` in `cache/site_meta.json`: Agadez 2018
+and 2024, Derna 2024, Marrakesh 2026), which the automatic flags often keep. Output columns are
+`id, p_change, pred_class, p_construction, p_destruction, p_soil_sealing, p_no_change`; edit the `OUTPUT` block at the top of
+`predict.py` to match the official submission format.
+
+## 6. How the training data is used
+* **Points**: `use_for_training = true` points only (1029). `weight` is the point's reliability weight, multiplied by
+  (site × class) balancing. Organizer points keep the id `<site>_<point_id>`; team-added points are `<site>_x<point_id>`.
+* **Pairs**: every model trains on the labelled pairs of `train_pairs` (`src/pairs.py: label_pairs`). A pair's weight is its
+  derivation factor (event 1, before the event ×0.5, after it ×0.4). The point's reliability is applied once, through
+  `point_weights`. Adjacent pairs that span a change count double as the "core" pair. Models with `reverse` also train on the
+  time-reversed pairs (no_change stays no_change, construction ↔ destruction at half weight).
+* **Dates**: a training point's valid dates are its reviewed `usable_years`, so the README's unusable scenes (Derna 2024,
+  Marrakesh 2026, Agadez 2018/2024, local clouds) are never used. Prediction scores every pair of valid dates and takes the mean
+  `p_change` of the two most changed pairs (year-free, the test condition).
+* **Fallback**: a point without labelled pairs gets pairs from `year_before` / `year_after`, as in the previous version.
+* **Label source switch** `PAIRS_FROM`: `train_pairs` (default, all labelled pairs), `train_pairs_event` (without the no_change
+  pairs taken before / after a change point's event), or `years` (the previous `year_before` / `year_after` rule for every point;
+  valid dates still follow `usable_years`). On a CPU check with Model A (no DINOv2 distances, 3 seeds) the three were within
+  the hackathon's 0.02 noise margin: S 0.405 / 0.390 / 0.415, with equal M_out for `train_pairs` and `years` and a higher M_in
+  for `years`. To decide on the full features, compare Model A once per source (minutes each, after the `emb` step):
+  `for v in train_pairs years; do bash scripts/run.sh cmp_$v scripts/exp_A.py Acmp_$v "{\"agg\":\"top2\",\"dino\":\"dinov2-l_B1\",\"pairs_from\":\"$v\"}" 0,1,2; done`
+  then read the two `Acmp_` rows of `reports/results.md`, and run the pipeline with the better one: `PAIRS_FROM=years bash scripts/run_all.sh`.
+
+## 7. Validation protocol
+* M_in: `StratifiedGroupKFold(5)` with groups = 200 m blocks, stratified by site × class. All pairs of a point stay in its fold.
+* M_out: leave-one-site-out.
+* Early stopping uses an inner split of the training part only. Every split is asserted disjoint (`audit_ensemble.py`).
+* Ensemble weights are equal, not fitted. The threshold and class biases are fitted on held-in data only, so the audited score is nested.
+* The audit also reports `S_org`: the same nested predictions scored against `label_original` from `eval_original_776.csv` on the
+  728 organizer points that are training points. The 48 evaluation points with `use_for_training = false` are not scored.
+* Sanity check: `scripts/shuffle_test.sh` retrains on permuted labels (the score must fall to chance, S ≈ 0.25). Its member names
+  are those of the previous version; edit them before use.
+
+## 8. Method
 ```
 imagery stack + points
-  └─ preprocessing: per point × date quality flags (sharpness, contrast, haze, valid alpha)
-                    local co-registration (phase correlation on gradients, ≤ 12 px), 192 m tiles
+  └─ preprocessing: per point × date quality flags, local co-registration (phase correlation on gradients, ≤ 12 px), 192 m tiles
        ├─ engineered pair features (Lab, change vector, SSIM, LBP, ExG, shadows, bare/paved) + DINOv2 distances
-       │     └─ Model A   LightGBM per pair of dates, top-2 pair aggregation (year-free)
-       ├─ frozen DINOv2-L tokens (8 dihedral views, canonical frame)
+       │     └─ Model A   LightGBM per pair of dates
+       ├─ frozen DINOv2-L tokens (8 dihedral views)
        │     └─ Model B   bitemporal transformer head, Gaussian centre pooling
-       ├─ Model C   siamese DINOv2-L + LoRA (r=16, last 8 blocks), heavy image augmentation
-       └─ Model C3  siamese DINOv3-sat-L (SAT-493M) + LoRA, same head and augmentation
-  equal-weight average of A, B, C, C3 (5 seeds each)
-  decision: p_change ≥ t (0.74) → argmax change class + log-bias b, else no_change
-  monotone Platt calibration of p_change for the reported probabilities (LOSO ECE 0.235 → 0.038)
+       ├─ Model C   siamese DINOv2-L + LoRA (r = 16, last 8 blocks), heavy image augmentation
+       └─ Model C3  siamese DINOv3-SAT-L + LoRA, same head and augmentation
+  pair probabilities -> point: mean p_change of the top-2 pairs; equal-weight average of the members
+  decision: p_change ≥ t -> argmax change class + log-bias b, else no_change; monotone Platt calibration of p_change
 ```
-* **Labels v3**: pairs of dates are labelled from `year_before` / `year_after`. A changed point is positive for pairs that
-  bracket the change, and pairs inside the bracket are ignored. Reviewer `train_weight` is the reliability weight, multiplied
-  by (site × class) balancing.
-* Annotation metadata is never used as model input, only for sample weights. Pixels with alpha = 0 (outside the area
-  or withheld test cells) are masked everywhere and never reconstructed. No training point lies in a withheld cell
-  (`scripts/check_holes_v2.py`).
 
-### Classification heads
-* **A**: LightGBM multiclass on pair features. Pair probabilities are averaged over the two most-changed pairs.
-* **B / C / C3**: shared head design. Tokens are projected to 256-d, then fused per token as [h_b, h_a, |h_a − h_b|, cos],
-  plus a learned 2-D position embedding, a 2-layer transformer (4 heads, pre-norm), and attention pooling with a learnable
-  Gaussian prior around the point (σ initialised at 16 m). The output is a linear layer to 4 logits. Loss: focal (γ = 1.5),
-  label smoothing 0.05.
+## 9. What changed in this version
+* `scripts/p0_data.py` replaces `p0_audit.py` and `p0_points_v2.py`. It needs neither `train_annotations.geojson` nor zipped
+  imagery, and it builds one workspace instead of the earlier `~/heritage` + `~/heritage_v2` pair.
+* Pair labels come from `train_pairs` and valid dates from `usable_years` (section 6); `PAIRS_FROM` switches the label source.
+* `predict.py` drops a known site's reviewed unusable scenes for test points.
+* `train_final.py --calib` writes the `p_change` calibration into `models/final/ensemble.json`. You no longer copy a fixed
+  `configs/ensemble.json`.
+* `scripts/run.sh` works from any clone location; `scripts/run_all.sh` is the one-command pipeline.
+* `configs/reference_v3_932pts/` keeps the configurations and scores of the previous run (932 points, S = 0.637) for comparison.
+  They are not read by the pipeline.
 
 ## Repository layout
 ```
 src/          preprocessing, features, models A/A-pt/B/C (+ D, E experiments), validation, final training / prediction
-scripts/      pipeline steps and experiments
+scripts/      pipeline steps (run_all.sh, run.sh, p0_data.py, p1_tiles.py, ...) and experiments
 predict.py    end-to-end inference on new points / a new site
-configs/      v3 member and ensemble configurations (configs/v1/: previous version)
-notebooks/    build_notebook.py writes a walk-through notebook (v1 pipeline)
+configs/      reference configurations of the previous run
+notebooks/    build_notebook.py writes the walk-through notebook of the v1 pipeline (it expects the v1 inputs)
 ```
 
-## Installation
-Python 3.12 and a CUDA GPU (developed on an RTX 5000 Ada, 32 GB).
-```bash
-python -m venv .venv && source .venv/bin/activate
-pip install torch==2.11.0 torchvision==0.26.0 --index-url https://download.pytorch.org/whl/cu128
-pip install -r requirements.txt
-```
-Backbones are downloaded from the Hugging Face Hub on first use: `facebook/dinov2-large` and
-`timm/vit_large_patch16_dinov3.sat493m`. `HF_HOME` sets the cache directory.
-
-## Data
-```
-$DATA_DIR/train_annotations.geojson
-$DATA_DIR/train_points_organized.geojson      # reviewed points: use_for_training, weight, review_status, year_before / year_after
-$DATA_DIR/train_imagery/train_imagery_<site>-<country>.zip     # one GeoTIFF per date: YYYY_YYYYMMDD.tif
-```
-`DATA_DIR` defaults to `~/data/train_dataset`. `HERITAGE_ROOT` is where `cache/`, `reports/`, `logs/` and `models/`
-are written. v1 uses `~/heritage`. v3 uses a second root (`~/heritage_v2`) that links `data/raw` and `cache/tiles` from
-the v1 root.
-
-## Reproduce v3
-```bash
-# v1 root first: unzip + audit, tiles for the organizer points
-R=scripts/run.sh
-bash $R p0 scripts/p0_audit.py
-bash $R p1 scripts/p1_tiles.py
-# v3 root
-mkdir -p ~/heritage_v2/{cache,data,logs,reports,models}
-ln -sfn ~/heritage/data/raw ~/heritage_v2/data/raw; ln -sfn ~/heritage/cache/tiles ~/heritage_v2/cache/tiles
-cp ~/heritage/cache/site_meta.json ~/heritage_v2/cache/
-V=scripts/run_v2.sh
-bash $V points scripts/p0_points_v2.py              # reviewed labels -> points table (year_before/after, train_weight)
-bash $V p1     scripts/p1_tiles.py                  # tiles for the extra points (existing tiles are reused)
-bash $V holes  scripts/check_holes_v2.py            # no point inside a withheld cell
-bash $V featA  scripts/p3_featA.py
-bash $V emb    scripts/p4_embed.py dinov2-l B1      # token cache, ~60 GB: put cache/emb on a fast local disk
-bash $V A      scripts/exp_A.py A_v3lab_dinov2 '{"agg":"top2","dino":"dinov2-l_B1"}'
-bash $V B      scripts/exp_B.py B_v3lab_dinov2 '{"agg":"top2","reverse":false,"emb":"dinov2-l_B1"}'
-bash $V C      scripts/exp_C.py C_v2lab_s0 '{}' 0
-bash $V C3     scripts/exp_C.py C_v3lab_dinov3_s0 '{"bb":"dinov3s-l"}' 0
-M=A_v3lab_dinov2,B_v3lab_dinov2,C_v2lab_s0,C_v3lab_dinov3_s0
-bash $V ens    scripts/ensemble.py $M --weights eq --out ens_E3       # t, b on pooled LOSO OOF
-bash $V calib  scripts/v2_ensemble.py $M --tag E3                     # p_change calibration (+ ensemble-level checks)
-bash $V audit  scripts/audit_ensemble.py $M --tag E3                  # nested scores, leak assertions, bootstrap CI
-bash $V final  scripts/train_final.py ~/heritage_v2/reports/ens_E3.json   # all points, 5 seeds per member
-cp configs/ensemble.json ~/heritage_v2/models/final/ensemble.json        # weights, t, b, p_change calibration
-```
-v1 commands: `configs/v1/` holds its configuration. The steps match the ones above, run on the v1 root with
-`scripts/run.sh`, and use members `A_lgb_top2_dino, Apt_opt, C_l_B2_lora3, B_l_B1_norev`.
-
-## Predict
-```bash
-HERITAGE_ROOT=~/heritage_v2 python predict.py --points test_points.geojson --imagery /path/to/site_imagery --out submission.csv
-# options: --site NAME  --id-col id  --use-year  --tta N (default 8; lower is faster)  --models DIR  --work DIR
-```
-The points file is GeoJSON or CSV with lon/lat (CRS84) and an id column. The imagery is a folder or zip of
-`YYYY_YYYYMMDD.tif` files on one grid. The UTM zone is read from the GeoTIFF CRS, and any number of dates works. Output columns:
-`id, p_change, pred_class, p_construction, p_destruction, p_soil_sealing, p_no_change`. They are defined in the `OUTPUT`
-block at the top of `predict.py`. With two LoRA members and 8× test-time augmentation, about 140 points take
-roughly 75 minutes on one GPU.
-
-## Validation protocol
-* In-domain proxy: `StratifiedGroupKFold(5)` with groups = 200 m blocks, stratified by site × class.
-* Out-of-domain proxy: leave-one-site-out.
-* Early stopping and checkpoint selection use an inner split of the training sites only. Every split is asserted disjoint.
-* Ensemble weights are equal (not fitted). Threshold and class biases are fitted only on held-in data, which makes the score nested.
-* Sanity checks: label-shuffle test (`scripts/shuffle_test.sh`, `scripts/shuffle_eval.sh`) gives S ≈ 0.245, the chance
-  level. In-sample predictions on a training site are high but not perfect.
-
-## Experiments that did not improve the nested ensemble
-Frozen DINOv3-sat or RemoteCLIP features for A / A-pt / B (frozen DINOv2 is better). DINOv2-giant. SAM ViT-H
-(AnyChange-style) features. Siamese U-Net with a ConvNeXt-DINOv3 encoder. Per-site feature / token normalisation.
-Confident-learning label filtering. Wider co-registration search. EM label-shift adaptation. Stacking. Fitted ensemble
-weights.
+## Troubleshooting
+* **A step failed**: read `$HERITAGE_ROOT/logs/<step>.log`, fix the cause, run `run_all.sh` again; finished steps are skipped.
+* **Out of GPU memory in C / C3**: add `\"bs\":16` to `C_CFG` and `C3_CFG` in `run_all.sh` (default batch 32).
+* **DataLoader workers crash or the box has few CPUs**: add `\"workers\":2` to the member's config in `run_all.sh`.
+* **macOS only**: LightGBM and scikit-learn bundle different OpenMP runtimes and can segfault together; run with
+  `OMP_NUM_THREADS=1` and `"threads":1` in `A_CFG`. Linux GPU boxes are not affected.
+* **Disk full during `emb`**: point `HERITAGE_ROOT` at a larger disk, or symlink `$HERITAGE_ROOT/cache/emb` to one.
+* **`no GeoTIFF folder found`**: check that the five site folders sit under `IMAGERY_DIR` and contain the `.tif` files directly.
 
 ## External resources
-* DINOv2 ViT-L/14 (`facebook/dinov2-large`, Apache-2.0). DINOv3 ViT-L/16 SAT-493M (`timm` release, DINOv3 licence).
-* Also used in experiments: DINOv2-g, DINOv3 web / ConvNeXt (`timm`), SAM ViT-H (Apache-2.0), RemoteCLIP ViT-L/14.
-* PyTorch, transformers, timm, peft, open_clip, LightGBM, CatBoost, scikit-learn, scikit-image, OpenCV, rasterio, pyproj,
-  shapely, geopandas, pandas, optuna, matplotlib.
+DINOv2 ViT-L/14 (`facebook/dinov2-large`, Apache-2.0). DINOv3 ViT-L/16 SAT-493M (`timm` release, DINOv3 licence). PyTorch,
+transformers, timm, peft, LightGBM, CatBoost, scikit-learn, scikit-image, OpenCV, rasterio, pyproj, pandas.

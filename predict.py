@@ -79,6 +79,12 @@ def build_tiles(df, img_dir, work, id_col):
     for s in srcs[1:]:
         assert s.crs == ref.crs and s.transform == ref.transform and s.shape == ref.shape, "dates not on one grid"
     log.info("imagery %s: %d dates, CRS %s (zone taken from GeoTIFF), %dx%d", img_dir, len(fs), ref.crs, ref.width, ref.height)
+    # a training site: also drop the scenes the review rejected for the whole site (haze / cloud the automatic flags can miss)
+    meta_fn = common.CACHE / "site_meta.json"
+    known = json.load(open(meta_fn)) if meta_fn.exists() else {}
+    skey = next((s for s in known if str(df.site.iloc[0]).lower().startswith(s)), None)
+    unusable = set(known[skey].get("unusable_scenes", [])) if skey else set()
+    if unusable: log.info("site %s: dropping reviewed unusable scenes %s", skey, sorted(unusable))
     tr = Transformer.from_crs("OGC:CRS84", ref.crs, always_xy=True)
     tile_dir = work / "tiles"
     rows = []
@@ -89,6 +95,7 @@ def build_tiles(df, img_dir, work, id_col):
         col, row = ~ref.transform * (x, y)
         if not fn.exists():
             t = build_point_tiles(srcs, col, row)
+            t["bad"] = t["bad"] | np.array([d.year in unusable for d, _ in dates])
             np.savez_compressed(fn, tiles=t["tiles"], raw=t["raw"], bad=t["bad"], shifts=t["shifts"], ref=t["ref"],
                                 quality=np.array(t["quality"], dtype=object),
                                 dates=np.array([d.isoformat() for d, _ in dates]),

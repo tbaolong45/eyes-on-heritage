@@ -154,7 +154,7 @@ class ModelC:
         for k in idx:
             r = self.pts.iloc[k]; years, bad, q = self.meta[r.point_id]
             vi, _ = valid_dates(bad, q)
-            lp = label_pairs(r.y, r.year, years, list(vi), year_before=r.get("year_before"), reverse=self.cfg.get("reverse", True))
+            lp = label_pairs(r.y, r.year, years, list(vi), year_before=r.get("year_before"), pid=r.point_id, pairs_from=self.cfg.get("pairs_from", "train_pairs"), reverse=self.cfg.get("reverse", True))
             tot = sum(l[3] * (2.0 if l[4] else 1.0) for l in lp) or 1
             out += [(r.point_id, int(i), int(j), int(lab), float(wp[k] * pw * (2.0 if core else 1.0) / tot), k)
                     for i, j, lab, pw, core in lp]

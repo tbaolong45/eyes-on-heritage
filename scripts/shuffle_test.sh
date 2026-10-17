@@ -1,7 +1,7 @@
 #!/bin/bash
 # Label-shuffle test of the full ensemble pipeline (members retrained on permuted labels, seed 0).
-cd ~/heritage; source .venv/bin/activate
-export HERITAGE_SHUFFLE=1 PYTHONHASHSEED=0 HF_HOME=$HOME/heritage/hf_cache OMP_NUM_THREADS=2
+cd "$(dirname "$0")/.."; [ -f .venv/bin/activate ] && source .venv/bin/activate
+export HERITAGE_SHUFFLE=1 PYTHONHASHSEED=0 HF_HOME=${HF_HOME:-${HERITAGE_ROOT:-/workspace/heritage_run}/hf_cache} OMP_NUM_THREADS=2
 cfg() { python -c "import json,sys
 r={}
 for l in open('reports/runs.jsonl'):

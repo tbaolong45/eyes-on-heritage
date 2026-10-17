@@ -1,4 +1,5 @@
 """Pair construction, labels, sample weights, CV folds, point-level aggregation, decision rule."""
+import os
 import numpy as np, pandas as pd
 from sklearn.model_selection import StratifiedGroupKFold
 from common import CLASSES, C2I, NC, SITES, CACHE
@@ -40,10 +41,47 @@ def infer_pairs(pid, vi, years):
     return all_pairs(vi)
 
 
-def label_pairs(cls, year, years, idx, ambiguous="exclude", reverse=False, year_before=None):
+_PAIR_LABELS = None
+
+
+def pair_labels():
+    """point_id -> [(year1, year2, label, pair weight, adjacent)] from cache/pair_labels.parquet (built by p0_data.py from
+    train_pairs). Disabled in the label-shuffle test, where labels must come from the shuffled points table."""
+    global _PAIR_LABELS
+    if _PAIR_LABELS is None:
+        fn = CACHE / "pair_labels.parquet"
+        _PAIR_LABELS = {}
+        if fn.exists() and not os.environ.get("HERITAGE_SHUFFLE"):
+            for r in pd.read_parquet(fn).itertuples():
+                _PAIR_LABELS.setdefault(r.point_id, []).append((r.year1, r.year2, int(r.y), float(r.w_pair), bool(r.adjacent),
+                                                                str(r.derivation)))
+    return _PAIR_LABELS
+
+
+def label_pairs(cls, year, years, idx, ambiguous="exclude", reverse=False, year_before=None, pid=None, pairs_from="train_pairs"):
     """Return list of (i, j, label, weight, is_core) training pairs for one point.
-    v1 labels: `year` = first year in which the change is visible (before: < year, after: >= year).
-    v3 labels: `year_before` / `year` (= year_after) bracket the change (before: <= year_before, after: >= year_after)."""
+    pairs_from="train_pairs" (default when the point has labelled pairs): every labelled year pair whose two dates are valid;
+    weight = derivation factor (x0.5 before the event, x0.4 after it); core = an adjacent pair spanning the change.
+    pairs_from="train_pairs_event": the same without the no_change pairs taken before / after a change point's event.
+    pairs_from="years": the year_before / year_after rule below for every point.
+    Fallback without labelled pairs: `year_before` / `year` (= year_after) bracket the change (before: <= year_before,
+    after: >= year_after); v1 labels: `year` = first year in which the change is visible."""
+    lp = pair_labels().get(pid) if pairs_from != "years" else None
+    if lp and pairs_from == "train_pairs_event":
+        lp = [l for l in lp if not l[5].startswith(("before_event", "after_event"))]
+    if lp:
+        t_of = {int(y): t for t, y in enumerate(years) if t in set(int(i) for i in idx)}
+        out = []
+        for y1, y2, lab, w, adj, _ in lp:
+            if y1 not in t_of or y2 not in t_of: continue
+            i, j = t_of[y1], t_of[y2]
+            out.append((i, j, lab, w, adj and lab != NC))
+            if reverse and lab == NC:
+                out.append((j, i, NC, w, False))
+            elif reverse and lab in (CON, DES):
+                out.append((j, i, DES if lab == CON else CON, 0.5 * w, False))
+        if out:
+            return out
     out = []
     pairs = all_pairs(idx)
     if cls == NC:

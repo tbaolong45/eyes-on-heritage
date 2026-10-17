@@ -57,7 +57,7 @@ class PairTable:
         for k in idx:
             r = self.pts.iloc[k]; years, bad, q = self.meta[r.point_id]
             vi, _ = valid_dates(bad, q)
-            lp = label_pairs(r.y, r.year, years, list(vi), year_before=r.get("year_before"), ambiguous=cfg.get("ambiguous", "exclude"),
+            lp = label_pairs(r.y, r.year, years, list(vi), year_before=r.get("year_before"), pid=r.point_id, pairs_from=cfg.get("pairs_from", "train_pairs"), ambiguous=cfg.get("ambiguous", "exclude"),
                              reverse=cfg.get("reverse", False))
             if cfg.get("pairs") == "core":
                 if r.y == NC:   # consecutive valid dates only

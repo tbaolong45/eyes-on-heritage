@@ -1,5 +1,6 @@
-"""P7: retrain every ensemble member on all 776 points (5 seeds, fixed budgets from CV) and write
-models/final/ensemble.json. usage: train_final.py reports/<ens>.json [--seeds 0,1,2,3,4]"""
+"""P7: retrain every ensemble member on all training points (5 seeds, fixed budgets from CV) and write
+models/final/ensemble.json (weights, t, b from the ensemble run; p_change calibration from v2_ensemble.py when given).
+usage: train_final.py reports/<ens>.json [--seeds 0,1,2,3,4] [--calib reports/v2ens_<tag>.json]"""
 import sys, json
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
@@ -49,6 +50,9 @@ for name, w in zip(ens["runs"], ens["weights"]):
     print("training", spec["name"], kind, "budget", spec["budget"], flush=True)
     train_member(spec, seeds, out_root, train_idx)
     weights[name] = float(w)
+calib = json.load(open(sys.argv[sys.argv.index("--calib") + 1])) if "--calib" in sys.argv else None
 json.dump(dict(weights=weights, t=ens["t"], b=ens["b"], S_proxy=ens["S"], M_in=ens["M_in"], M_out=ens["M_out"],
-               boot_ci=ens.get("boot_ci"), seeds=seeds, source=sys.argv[1]), open(out_root / "ensemble.json", "w"), indent=1)
+               boot_ci=ens.get("boot_ci"), seeds=seeds, source=sys.argv[1],
+               **({"pc_platt": calib["output_calibration"]["platt_all"]} if calib else {})),
+          open(out_root / "ensemble.json", "w"), indent=1)
 print("final models written to", out_root)

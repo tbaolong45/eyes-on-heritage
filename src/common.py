@@ -3,9 +3,15 @@ import os, json, random, hashlib, datetime
 from pathlib import Path
 import numpy as np
 
-ROOT = Path(os.environ.get("HERITAGE_ROOT", Path.home() / "heritage"))
-DATA_DIR = Path(os.environ.get("DATA_DIR", Path.home() / "data" / "train_dataset"))
-RAW = ROOT / "data" / "raw"
+# ---------------- paths: edit here or set the environment variables ----------------
+DATA_DIR = Path(os.environ.get("DATA_DIR", "/workspace"))                               # folder holding the inputs below
+IMAGERY_DIR = Path(os.environ.get("IMAGERY_DIR", DATA_DIR / "train_dataset"))           # <site-country>/YYYY_YYYYMMDD.tif
+POINTS_FILE = Path(os.environ.get("POINTS_FILE", DATA_DIR / "train_points_organized.geojson"))
+PAIRS_FILE = Path(os.environ.get("PAIRS_FILE") or next(
+    (p for p in (DATA_DIR / "train_pairs.csv", DATA_DIR / "train_pairs.json") if p.exists()), DATA_DIR / "train_pairs.csv"))
+EVAL_FILE = Path(os.environ.get("EVAL_FILE", DATA_DIR / "eval_original_776.csv"))       # optional: organizer labels for scoring
+ROOT = Path(os.environ.get("HERITAGE_ROOT", DATA_DIR / "heritage_run"))                 # caches, reports, logs, models
+RAW = ROOT / "data" / "raw"                                                             # p0_data.py links <site> -> IMAGERY_DIR folders
 CACHE = ROOT / "cache"
 REPORTS = ROOT / "reports"
 MODELS = ROOT / "models"
@@ -20,11 +26,6 @@ SITES = ["agadez", "aleppo", "derna", "marrakesh", "timbuktu"]
 PX = 0.5            # metres / pixel
 CELL_PX = 200       # 100 m cell
 TILE = 384          # 192 m tile
-EXPECTED_COUNTS = {"no_change": 406, "construction": 243, "soil_sealing": 64, "destruction": 63}
-EXPECTED_SITE = {
-    "agadez": (73, 11, 12, 90), "aleppo": (76, 7, 20, 39), "derna": (14, 12, 21, 84),
-    "marrakesh": (34, 22, 3, 119), "timbuktu": (46, 11, 8, 74)}
-EXPECTED_DATES = {"agadez": 9, "aleppo": 10, "derna": 5, "marrakesh": 8, "timbuktu": 8}
 
 
 TILE_DIR = Path(os.environ["HERITAGE_TILE_DIR"]) if os.environ.get("HERITAGE_TILE_DIR") else CACHE / "tiles"
@@ -65,8 +66,7 @@ def site_dates(site_dir):
     return fs, [parse_date(f.name) for f in fs]
 
 
-LABEL_COLS = ["class", "y", "year", "best_accuracy", "verified_ok", "conflict", "n_teams", "teams",
-              "classes_seen", "class_uncertain"]
+LABEL_COLS = ["class", "y", "year", "year_before", "year_after", "train_weight"]
 
 
 def load_points():
@@ -79,8 +79,7 @@ def load_points():
         perm = np.random.RandomState(int(sh)).permutation(len(df))
         df[LABEL_COLS] = df[LABEL_COLS].iloc[perm].to_numpy()
         df["y"] = df["y"].astype(int)
-        df["year"] = df["year"].astype(float)
-        for c in ("best_accuracy", "verified_ok", "conflict", "n_teams"):
+        for c in ("year", "year_before", "year_after", "train_weight"):
             df[c] = pd.to_numeric(df[c])
     return df
 

@@ -38,6 +38,9 @@ for site in SITES:
             qs = list(z["quality"])
         else:
             r = build_point_tiles(srcs, p.col, p.row)
+            usable = {int(y) for y in str(p.get("usable_years") or "").split(",") if y.strip().isdigit()}
+            if len(usable) >= 2:   # reviewed list of usable dates (cloud, haze, blur checked by eye) overrides the automatic flags
+                r["bad"] = np.array([d.year not in usable for d, _ in dates])
             np.savez_compressed(fn, tiles=r["tiles"], raw=r["raw"], bad=r["bad"], shifts=r["shifts"], ref=r["ref"],
                                 quality=np.array(r["quality"], dtype=object),
                                 dates=np.array([d.isoformat() for d, _ in dates]),
