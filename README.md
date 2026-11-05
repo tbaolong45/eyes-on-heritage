@@ -145,3 +145,12 @@ weights.
 * Also used in experiments: DINOv2-g, DINOv3 web / ConvNeXt (`timm`), SAM ViT-H (Apache-2.0), RemoteCLIP ViT-L/14.
 * PyTorch, transformers, timm, peft, open_clip, LightGBM, CatBoost, scikit-learn, scikit-image, OpenCV, rasterio, pyproj,
   shapely, geopandas, pandas, optuna, matplotlib.
+
+## Contributors
+This project is joint work by:
+
+* [Dang Truong Minh Le](https://github.com/dangaura-tech)
+* [Long Tran](https://github.com/tbaolong45)
+
+The original repository is `dangaura-tech/eyes-on-heritage`. This copy keeps the full commit history, so every commit
+stays credited to the person who wrote it.
